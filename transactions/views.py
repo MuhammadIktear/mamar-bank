@@ -1,11 +1,11 @@
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.urls import reverse_lazy
-from django.utils import timezone
 from django.shortcuts import get_object_or_404, redirect
 from django.views import View
 from django.http import HttpResponse
-from django.views.generic import CreateView, ListView
+from django.views.generic import CreateView, ListView,FormView
+from .models import Bankrupt
 from transactions.constants import DEPOSIT, WITHDRAWAL,LOAN, LOAN_PAID
 from datetime import datetime
 from django.db.models import Sum
@@ -15,7 +15,13 @@ from transactions.forms import (
     LoanRequestForm,
 )
 from transactions.models import Transaction
-
+from django.shortcuts import render, redirect
+from django.views.generic import View
+from .forms import TransferMoneyForm
+from .models import UserBankAccount
+from .models import Transaction  
+from .constants import WITHDRAWAL, DEPOSIT, SEND_MONEY, RECEIVED_MONEY
+from accounts.views import send_transaction_email
 class TransactionCreateMixin(LoginRequiredMixin, CreateView):
     template_name = 'transactions/transaction_form.html'
     model = Transaction
@@ -67,7 +73,7 @@ class DepositMoneyView(TransactionCreateMixin):
         return super().form_valid(form)
 
 
-class WithdrawMoneyView(TransactionCreateMixin):
+class WithdrawMoneyView(TransactionCreateMixin, FormView):
     form_class = WithdrawForm
     title = 'Withdraw Money'
 
@@ -76,12 +82,20 @@ class WithdrawMoneyView(TransactionCreateMixin):
         return initial
 
     def form_valid(self, form):
+        if Bankrupt.objects.filter(is_Bankrupt=True).exists():
+            messages.error(self.request, 'Bank is bankrupt. Withdrawal not allowed.')
+            return redirect('profile') 
+        
         amount = form.cleaned_data.get('amount')
+        user_account = self.request.user.account
 
-        self.request.user.account.balance -= form.cleaned_data.get('amount')
-        # balance = 300
-        # amount = 5000
-        self.request.user.account.save(update_fields=['balance'])
+        if user_account.balance < amount:
+            messages.error(self.request, 'Insufficient funds.')
+            return redirect('profile')
+        
+        # Proceed with the withdrawal
+        user_account.balance -= amount
+        user_account.save(update_fields=['balance'])
 
         messages.success(
             self.request,
@@ -181,3 +195,51 @@ class LoanListView(LoginRequiredMixin,ListView):
         queryset = Transaction.objects.filter(account=user_account,transaction_type=3)
         print(queryset)
         return queryset
+    
+class TransferMoneyView(LoginRequiredMixin, View):
+    template_name = 'transactions/transfer_money.html'
+
+    def get(self, request):
+        form = TransferMoneyForm()
+        return render(request, self.template_name, {'form': form})
+
+    def post(self, request):
+        form = TransferMoneyForm(request.POST)
+        if form.is_valid():
+            sender = request.user.account  # Assuming UserBankAccount is related to User
+            recipient_account_no = form.cleaned_data['recipient_account_no']
+            amount = form.cleaned_data['amount']
+            
+            try:
+                recipient = UserBankAccount.objects.get(account_no=recipient_account_no)
+            except UserBankAccount.DoesNotExist:
+                messages.error(request, 'Recipient account does not exist')
+                return render(request, self.template_name, {'form': form})
+            
+            if sender.balance < amount:
+                messages.error(request, 'Insufficient funds')
+                return render(request, self.template_name, {'form': form})
+            
+            # Deduct from sender
+            sender.balance -= amount
+            sender.save()
+
+            # Add to recipient
+            recipient.balance += amount
+            recipient.save()
+
+            # Log the transaction
+            Transaction.objects.create(account=sender, amount=amount, balance_after_transaction=sender.balance,
+                                       transaction_type=SEND_MONEY)
+
+            Transaction.objects.create(account=recipient, amount=amount, balance_after_transaction=recipient.balance,
+                                       transaction_type=RECEIVED_MONEY)
+            
+            # Send transaction emails
+            send_transaction_email(sender.user, amount, "Money Sent", "transactions/sent_email.html")
+            send_transaction_email(recipient.user, amount, "Money Received", "transactions/received_email.html")
+
+            messages.success(request, f'Transferred {amount} to {recipient.user.username}')
+            return redirect('profile')
+
+        return render(request, self.template_name, {'form': form})

@@ -1,5 +1,6 @@
 from django import forms
 from .models import Transaction
+from django.contrib.auth.models import User
 class TransactionForm(forms.ModelForm):
     class Meta:
         model = Transaction
@@ -63,3 +64,7 @@ class LoanRequestForm(TransactionForm):
         amount = self.cleaned_data.get('amount')
 
         return amount
+
+class TransferMoneyForm(forms.Form):
+    recipient_account_no = forms.IntegerField(label='Recipient Account Number')
+    amount = forms.DecimalField(label='Amount', max_digits=12, decimal_places=2)

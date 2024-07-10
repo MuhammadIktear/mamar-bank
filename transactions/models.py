@@ -14,3 +14,6 @@ class Transaction(models.Model):
     
     class Meta:
         ordering = ['timestamp'] 
+        
+class Bankrupt(models.Model):
+    is_Bankrupt=models.BooleanField(default=False) 
